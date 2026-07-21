@@ -896,9 +896,29 @@ export default function App() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                       {/* Proxy File Selection */}
                       <div className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col justify-center">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">
-                          Select Proxy List File:
-                        </label>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase block">
+                            Select Proxy List File:
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewFileName("my_proxies");
+                              setNewFileContent(`# Paste SOCKS5 or HTTP proxies below (one per line)
+# Supported formats:
+# 1) ip:port
+# 2) ip:port:user:password
+# Examples:
+# 45.138.10.22:1080
+# 185.22.154.91:3128:deltauser:secretpass123
+`);
+                              setShowCreateFile(true);
+                            }}
+                            className="text-[10px] text-indigo-600 hover:text-indigo-800 font-extrabold uppercase tracking-wider flex items-center space-x-1 focus:outline-none cursor-pointer hover:underline"
+                          >
+                            <span>➕ Create/Paste Proxy File</span>
+                          </button>
+                        </div>
                         <select
                           value={selectedProxyFile}
                           onChange={(e) => setSelectedProxyFile(e.target.value)}
