@@ -97,6 +97,11 @@ export default function App() {
   // Proxy controls
   const [selectedProxyFile, setSelectedProxyFile] = useState<string>("");
   const [proxyType, setProxyType] = useState<"socks5" | "http">("socks5");
+  const [parsedProxies, setParsedProxies] = useState<any[]>([]);
+  const [parsingProxies, setParsingProxies] = useState<boolean>(false);
+  const [proxyParseError, setProxyParseError] = useState<string>("");
+  const [proxyFilter, setProxyFilter] = useState<"all" | "valid" | "invalid">("all");
+  const [proxySearch, setProxySearch] = useState<string>("");
   
   // Single controls
   const [singleHost, setSingleHost] = useState("");
@@ -179,6 +184,62 @@ export default function App() {
     }
   }, [singleUser]);
 
+  // Load and parse selected proxy file
+  useEffect(() => {
+    loadParsedProxies(selectedProxyFile, proxyType);
+  }, [selectedProxyFile, proxyType]);
+
+  const loadParsedProxies = async (fileName: string, type: "socks5" | "http") => {
+    if (!fileName) {
+      setParsedProxies([]);
+      setProxyParseError("");
+      return;
+    }
+    setParsingProxies(true);
+    setProxyParseError("");
+    try {
+      const res = await fetch(`/api/parse-proxies?fileName=${encodeURIComponent(fileName)}&proxyType=${type}`);
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setParsedProxies(data.proxies || []);
+      } else {
+        setProxyParseError(data.error || "Failed to load proxies");
+      }
+    } catch (err: any) {
+      setProxyParseError(err.message || "Network error loading proxies");
+    } finally {
+      setParsingProxies(false);
+    }
+  };
+
+  const getFilteredProxies = () => {
+    return parsedProxies.filter(p => {
+      // 1. Filter by validation status
+      if (proxyFilter === "valid" && (p.type !== "proxy" || !p.valid)) {
+        return false;
+      }
+      if (proxyFilter === "invalid" && (p.type !== "proxy" || p.valid)) {
+        return false;
+      }
+      
+      // 2. Filter by search query
+      if (proxySearch.trim() !== "") {
+        const query = proxySearch.toLowerCase();
+        if (p.type === "proxy") {
+          const rawMatch = p.raw.toLowerCase().includes(query);
+          const hostMatch = p.parsed?.host?.toLowerCase().includes(query);
+          const portMatch = String(p.parsed?.port || "").includes(query);
+          const userMatch = p.parsed?.user?.toLowerCase().includes(query);
+          return rawMatch || hostMatch || portMatch || userMatch;
+        } else {
+          return p.raw?.toLowerCase().includes(query);
+        }
+      }
+      
+      return true;
+    });
+  };
+
   const fetchScanConfig = async () => {
     try {
       const res = await fetch("/api/scan-config");
@@ -216,6 +277,9 @@ export default function App() {
       const res = await fetch("/api/files");
       const data = await res.json();
       setFiles(data.files || []);
+      if (selectedProxyFile) {
+        loadParsedProxies(selectedProxyFile, proxyType);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -803,48 +867,277 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Proxy settings block */}
-                  <div className="mb-4 bg-slate-50 border border-slate-200 p-3 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
-                      <Lock className="h-4 w-4 text-slate-500" />
-                      <span>PROXY ROTATION LAYER:</span>
+                  {/* Proxy settings block - HIGH VISIBILITY UPGRADE */}
+                  <div className="mb-5 bg-gradient-to-r from-indigo-50 to-slate-50 border-2 border-indigo-200 p-4 rounded-xl shadow-xs">
+                    <div className="flex items-center justify-between pb-2.5 border-b border-indigo-100 mb-3">
+                      <div className="flex items-center space-x-2">
+                        <Lock className="h-4.5 w-4.5 text-indigo-600" />
+                        <span className="text-xs font-extrabold text-indigo-900 tracking-wider uppercase">
+                          🛡️ Proxy Rotation Layer (Highly Recommended)
+                        </span>
+                      </div>
+                      <div>
+                        {selectedProxyFile ? (
+                          <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wide border border-emerald-200">
+                            Enabled & Rotating
+                          </span>
+                        ) : (
+                          <span className="bg-slate-200 text-slate-700 text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wide border border-slate-300">
+                            Direct connection
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex items-center space-x-1.5 text-xs">
-                        <span className="text-slate-600 font-medium">Proxy List File:</span>
+                    <p className="text-[11px] text-slate-600 mb-3.5 leading-relaxed">
+                      To prevent mail servers from rate-limiting, blocking, or throwing errors during high-concurrency testing, you can upload a file containing SOCKS5 or HTTP proxies formatted as <code className="bg-white px-1 py-0.5 rounded border border-indigo-100 text-indigo-600 font-mono text-[10px] font-semibold">ip:port:user:password</code> or <code className="bg-white px-1 py-0.5 rounded border border-indigo-100 text-indigo-600 font-mono text-[10px] font-semibold">ip:port</code>. Select that file below:
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      {/* Proxy File Selection */}
+                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col justify-center">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">
+                          Select Proxy List File:
+                        </label>
                         <select
                           value={selectedProxyFile}
                           onChange={(e) => setSelectedProxyFile(e.target.value)}
                           disabled={bulkStatus?.active}
-                          className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-sans focus:outline-none max-w-44 truncate"
+                          className="w-full bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 text-xs font-sans font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none cursor-pointer text-slate-800 disabled:opacity-60"
                         >
-                          <option value="">None (Direct Connection)</option>
+                          <option value="">🚫 None (Use Direct Connection - Slow/Risk of blocks)</option>
                           {files
                             .filter(f => f.name !== selectedFile)
                             .map(f => (
                               <option key={f.name} value={f.name}>
-                                {f.name}
+                                🔗 {f.name} ({f.totalLines} lines)
                               </option>
                             ))}
                         </select>
                       </div>
 
-                      {selectedProxyFile && (
-                        <div className="flex items-center space-x-1.5 text-xs">
-                          <span className="text-slate-600 font-medium">Protocol:</span>
-                          <select
-                            value={proxyType}
-                            onChange={(e) => setProxyType(e.target.value as "socks5" | "http")}
-                            disabled={bulkStatus?.active}
-                            className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-sans font-semibold focus:outline-none"
-                          >
-                            <option value="socks5">SOCKS5</option>
-                            <option value="http">HTTP CONNECT</option>
-                          </select>
-                        </div>
-                      )}
+                      {/* Protocol Selection */}
+                      <div className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col justify-center">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">
+                          Proxy Protocol / Type:
+                        </label>
+                        <select
+                          value={proxyType}
+                          onChange={(e) => setProxyType(e.target.value as "socks5" | "http")}
+                          disabled={!selectedProxyFile || bulkStatus?.active}
+                          className="w-full bg-slate-50 border border-slate-300 rounded px-2.5 py-1.5 text-xs font-sans font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none cursor-pointer text-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <option value="socks5">⚡ SOCKS5 (Highly Recommended)</option>
+                          <option value="http">🌐 HTTP CONNECT</option>
+                        </select>
+                      </div>
                     </div>
+
+                    {selectedProxyFile && (
+                      <div className="mt-4 border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h5 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                            <FileText className="h-3.5 w-3.5 text-indigo-500" />
+                            <span>Parsed Proxies & Validation Status</span>
+                          </h5>
+                          <button
+                            type="button"
+                            onClick={() => loadParsedProxies(selectedProxyFile, proxyType)}
+                            disabled={parsingProxies}
+                            className="text-[10px] text-indigo-600 hover:text-indigo-800 flex items-center space-x-1 font-bold uppercase tracking-wider focus:outline-none transition-colors disabled:opacity-50"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${parsingProxies ? 'animate-spin' : ''}`} />
+                            <span>Re-scan</span>
+                          </button>
+                        </div>
+
+                        {parsingProxies ? (
+                          <div className="flex items-center justify-center py-6 space-x-2 text-indigo-600 bg-white border border-slate-200 rounded-lg">
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                            <span className="text-xs font-semibold">Parsing proxy file entries...</span>
+                          </div>
+                        ) : proxyParseError ? (
+                          <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg text-xs flex items-center gap-2">
+                            <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
+                            <span>{proxyParseError}</span>
+                          </div>
+                        ) : parsedProxies.length === 0 ? (
+                          <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-lg text-xs flex items-center gap-2">
+                            <AlertCircle className="h-4 w-4 text-amber-500 flex-shrink-0" />
+                            <span>The selected file contains no proxies. Please format it as ip:port or ip:port:user:pass.</span>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            {/* Proxy file metrics summary badges */}
+                            <div className="grid grid-cols-3 gap-2 text-center">
+                              <div className="bg-white border border-slate-200 px-2.5 py-2 rounded-lg">
+                                <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Total Lines</p>
+                                <p className="text-sm font-extrabold text-slate-800 font-mono mt-0.5">{parsedProxies.length}</p>
+                              </div>
+                              <div className="bg-emerald-50 border border-emerald-100 px-2.5 py-2 rounded-lg">
+                                <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">Valid Structure</p>
+                                <p className="text-sm font-extrabold text-emerald-700 font-mono mt-0.5">
+                                  {parsedProxies.filter(p => p.type === "proxy" && p.valid).length}
+                                </p>
+                              </div>
+                              <div className="bg-red-50 border border-red-100 px-2.5 py-2 rounded-lg">
+                                <p className="text-[9px] text-red-500 font-bold uppercase tracking-wider">Invalid Structure</p>
+                                <p className="text-sm font-extrabold text-red-700 font-mono mt-0.5">
+                                  {parsedProxies.filter(p => p.type === "proxy" && !p.valid).length}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Filters, Search & Settings */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-100 p-2 rounded-lg border border-slate-200">
+                              <div className="flex bg-slate-200/80 p-0.5 rounded-md border border-slate-300">
+                                <button
+                                  type="button"
+                                  onClick={() => setProxyFilter("all")}
+                                  className={`px-2 py-1 text-[9px] font-extrabold rounded uppercase tracking-wider transition-all ${
+                                    proxyFilter === "all"
+                                      ? "bg-white text-indigo-950 shadow-xs"
+                                      : "text-slate-500 hover:text-slate-800"
+                                  }`}
+                                >
+                                  All ({parsedProxies.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setProxyFilter("valid")}
+                                  className={`px-2 py-1 text-[9px] font-extrabold rounded uppercase tracking-wider transition-all ${
+                                    proxyFilter === "valid"
+                                      ? "bg-emerald-600 text-white shadow-xs"
+                                      : "text-slate-500 hover:text-slate-800"
+                                  }`}
+                                >
+                                  Valid ({parsedProxies.filter(p => p.type === "proxy" && p.valid).length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setProxyFilter("invalid")}
+                                  className={`px-2 py-1 text-[9px] font-extrabold rounded uppercase tracking-wider transition-all ${
+                                    proxyFilter === "invalid"
+                                      ? "bg-red-600 text-white shadow-xs"
+                                      : "text-slate-500 hover:text-slate-800"
+                                  }`}
+                                >
+                                  Invalid ({parsedProxies.filter(p => p.type === "proxy" && !p.valid).length})
+                                </button>
+                              </div>
+
+                              <div className="relative w-full sm:max-w-48">
+                                <input
+                                  type="text"
+                                  placeholder="Search IP, Port, Username..."
+                                  value={proxySearch}
+                                  onChange={(e) => setProxySearch(e.target.value)}
+                                  className="w-full bg-white border border-slate-300 rounded px-2.5 py-1 text-[11px] placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 pl-7 font-sans font-medium"
+                                />
+                                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                              </div>
+                            </div>
+
+                            {/* Proxy list scroll window */}
+                            <div className="bg-slate-900 rounded-lg overflow-hidden border border-slate-850 shadow-inner">
+                              <div className="max-h-52 overflow-y-auto divide-y divide-slate-800/80 font-mono text-[10px]">
+                                {getFilteredProxies().length === 0 ? (
+                                  <div className="text-slate-500 p-4 text-center font-sans">
+                                    No lines match your search filter criteria.
+                                  </div>
+                                ) : (
+                                  getFilteredProxies().map((p) => (
+                                    <div 
+                                      key={p.lineNum} 
+                                      className={`p-2 flex items-start justify-between gap-2.5 transition-colors ${
+                                        !p.valid ? 'bg-red-950/15 hover:bg-red-950/25' : 'hover:bg-slate-800/40'
+                                      }`}
+                                    >
+                                      <div className="flex items-start space-x-2 w-full min-w-0">
+                                        <span className="text-slate-500 font-bold w-6 text-right select-none flex-shrink-0 mt-0.5">
+                                          {p.lineNum}
+                                        </span>
+                                        
+                                        {p.type === "empty" ? (
+                                          <span className="text-slate-600 italic select-none">Empty line (ignored)</span>
+                                        ) : p.type === "comment" ? (
+                                          <span className="text-emerald-500/80 italic truncate select-none">
+                                            {p.raw}
+                                          </span>
+                                        ) : p.valid ? (
+                                          <div className="flex flex-col min-w-0">
+                                            <div className="text-slate-200 flex flex-wrap items-center gap-x-1 gap-y-0.5 font-medium break-all">
+                                              <span className="text-slate-400 font-bold">Host:</span>
+                                              <span className="font-semibold text-indigo-300">{p.parsed.host}</span>
+                                              <span className="text-slate-600">|</span>
+                                              <span className="text-slate-400 font-bold">Port:</span>
+                                              <span className="text-emerald-400 font-bold">{p.parsed.port}</span>
+                                              {p.parsed.user && (
+                                                <>
+                                                  <span className="text-slate-600">|</span>
+                                                  <span className="text-slate-400 font-bold">User:</span>
+                                                  <span className="text-slate-300 font-semibold">{p.parsed.user}</span>
+                                                  <span className="text-slate-600">|</span>
+                                                  <span className="text-slate-400 font-bold">Pass:</span>
+                                                  <span className="text-amber-400 font-semibold">{p.parsed.pass}</span>
+                                                </>
+                                              )}
+                                            </div>
+                                            <span className="text-[9px] text-slate-500 mt-0.5 break-all">
+                                              Raw: {p.raw}
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <div className="flex flex-col w-full min-w-0">
+                                            <span className="text-red-400 font-bold break-all line-through opacity-85">
+                                              {p.raw}
+                                            </span>
+                                            <span className="text-[10px] text-red-300 font-sans mt-0.5 font-semibold flex items-center gap-1">
+                                              ⚠️ Error: {p.error}
+                                            </span>
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Validity indicator */}
+                                      <div className="flex-shrink-0 self-center">
+                                        {p.type === "proxy" ? (
+                                          p.valid ? (
+                                            <span className="bg-emerald-500/10 text-emerald-400 text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider border border-emerald-500/20">
+                                              Valid SOCKS/HTTP
+                                            </span>
+                                          ) : (
+                                            <span className="bg-red-500/10 text-red-400 text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider border border-red-500/20 animate-pulse">
+                                              Invalid Format
+                                            </span>
+                                          )
+                                        ) : (
+                                          <span className="text-slate-600 text-[8px] px-1.5 py-0.5 uppercase font-bold tracking-wider">
+                                            Skip
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Success badge message */}
+                            {parsedProxies.some(p => p.type === "proxy" && p.valid) && (
+                              <div className="bg-emerald-50 border border-emerald-100 p-2.5 rounded-lg text-[11px] text-emerald-800 flex items-start gap-2">
+                                <span className="font-extrabold text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded uppercase mt-0.5 select-none">
+                                  GUARANTEE
+                                </span>
+                                <span>
+                                  Automatic proxy validation confirmed. The bulk connection engine will rotate through your <strong className="font-extrabold">{parsedProxies.filter(p => p.type === "proxy" && p.valid).length} valid</strong> proxy addresses to execute bulk checks safely.
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Configured Bulk progress logs if active or just finished */}

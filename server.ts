@@ -1141,6 +1141,80 @@ app.get("/api/test-bulk-status", (req, res) => {
   res.json(bulkTask);
 });
 
+// Parse proxies for real-time validation and preview
+app.get("/api/parse-proxies", (req, res) => {
+  const { fileName, proxyType } = req.query;
+  if (!fileName) {
+    return res.status(400).json({ error: "fileName parameter is required" });
+  }
+
+  const filePath = path.join(scanFolder, String(fileName));
+  try {
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    const content = fs.readFileSync(filePath, "utf8");
+    const lines = content.split(/\r?\n/);
+    const parsedProxies = lines.map((line, idx) => {
+      const trimmed = line.trim();
+      const lineNum = idx + 1;
+
+      if (!trimmed) {
+        return {
+          lineNum,
+          raw: "",
+          type: "empty",
+          valid: true,
+          message: "Empty line"
+        };
+      }
+
+      if (trimmed.startsWith("#") || trimmed.startsWith("//")) {
+        return {
+          lineNum,
+          raw: trimmed,
+          type: "comment",
+          valid: true,
+          message: "Comment line"
+        };
+      }
+
+      const parsed = parseProxyLine(line, (proxyType as "socks5" | "http") || "socks5");
+      if (parsed) {
+        return {
+          lineNum,
+          raw: trimmed,
+          type: "proxy",
+          valid: true,
+          parsed: {
+            host: parsed.host,
+            port: parsed.port,
+            user: parsed.user,
+            pass: parsed.pass ? "••••••••" : undefined
+          }
+        };
+      } else {
+        return {
+          lineNum,
+          raw: trimmed,
+          type: "proxy",
+          valid: false,
+          error: "Invalid structure. Must be IP:PORT or IP:PORT:USER:PASSWORD"
+        };
+      }
+    });
+
+    res.json({
+      success: true,
+      fileName,
+      proxies: parsedProxies
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to parse proxy file: ${err.message}` });
+  }
+});
+
 // Retrieve connection logs
 app.get("/api/logs", (req, res) => {
   res.json({ logs: attemptLogs });
