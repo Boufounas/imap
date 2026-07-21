@@ -57,6 +57,8 @@ interface BulkStatus {
   endTime: number | null;
   logs: string[];
   currentIndex: number;
+  usingProxies: boolean;
+  proxyCount: number;
 }
 
 interface AttemptLog {
@@ -91,6 +93,10 @@ export default function App() {
   // Bulk controls
   const [concurrency, setConcurrency] = useState<number>(10);
   const [bulkStatus, setBulkStatus] = useState<BulkStatus | null>(null);
+  
+  // Proxy controls
+  const [selectedProxyFile, setSelectedProxyFile] = useState<string>("");
+  const [proxyType, setProxyType] = useState<"socks5" | "http">("socks5");
   
   // Single controls
   const [singleHost, setSingleHost] = useState("");
@@ -268,7 +274,12 @@ export default function App() {
       const res = await fetch("/api/test-bulk-start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName: selectedFile, concurrency })
+        body: JSON.stringify({ 
+          fileName: selectedFile, 
+          concurrency,
+          proxyFileName: selectedProxyFile || undefined,
+          proxyType
+        })
       });
       const data = await res.json();
       if (res.ok) {
@@ -522,6 +533,11 @@ export default function App() {
                 <h4 className="font-bold text-sm tracking-wide">ACTIVE BULK CONNECTION TEST RUNNING</h4>
                 <p className="text-xs text-slate-400">
                   Checking accounts from <span className="text-slate-100 font-semibold">{bulkStatus.fileName}</span> with concurrency of {bulkStatus.concurrency} threads.
+                  {bulkStatus.usingProxies && (
+                    <span className="ml-2 bg-indigo-500/30 text-indigo-300 font-mono text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider border border-indigo-500/20">
+                      Rotating {bulkStatus.proxyCount} Proxies
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
@@ -787,6 +803,50 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Proxy settings block */}
+                  <div className="mb-4 bg-slate-50 border border-slate-200 p-3 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center space-x-2 text-xs font-semibold text-slate-700">
+                      <Lock className="h-4 w-4 text-slate-500" />
+                      <span>PROXY ROTATION LAYER:</span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center space-x-1.5 text-xs">
+                        <span className="text-slate-600 font-medium">Proxy List File:</span>
+                        <select
+                          value={selectedProxyFile}
+                          onChange={(e) => setSelectedProxyFile(e.target.value)}
+                          disabled={bulkStatus?.active}
+                          className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-sans focus:outline-none max-w-44 truncate"
+                        >
+                          <option value="">None (Direct Connection)</option>
+                          {files
+                            .filter(f => f.name !== selectedFile)
+                            .map(f => (
+                              <option key={f.name} value={f.name}>
+                                {f.name}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+
+                      {selectedProxyFile && (
+                        <div className="flex items-center space-x-1.5 text-xs">
+                          <span className="text-slate-600 font-medium">Protocol:</span>
+                          <select
+                            value={proxyType}
+                            onChange={(e) => setProxyType(e.target.value as "socks5" | "http")}
+                            disabled={bulkStatus?.active}
+                            className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-sans font-semibold focus:outline-none"
+                          >
+                            <option value="socks5">SOCKS5</option>
+                            <option value="http">HTTP CONNECT</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Configured Bulk progress logs if active or just finished */}
                   {bulkStatus && (bulkStatus.active || (bulkStatus.fileName === selectedFile && bulkStatus.startTime)) && (
                     <div className="mb-4 bg-slate-50 border border-slate-200 p-3.5 rounded-xl">
@@ -799,7 +859,7 @@ export default function App() {
                           {bulkStatus.checked} / {bulkStatus.total} tested
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-3 text-center mb-3">
+                      <div className={`grid ${bulkStatus.usingProxies ? 'grid-cols-4' : 'grid-cols-3'} gap-3 text-center mb-3`}>
                         <div className="bg-white border border-slate-100 p-2 rounded-lg">
                           <p className="text-[10px] text-slate-400 font-semibold uppercase">Successful</p>
                           <p className="text-base font-bold text-emerald-600">{bulkStatus.successCount}</p>
@@ -812,6 +872,12 @@ export default function App() {
                           <p className="text-[10px] text-slate-400 font-semibold uppercase">Concurrency</p>
                           <p className="text-base font-bold font-mono text-slate-800">{bulkStatus.concurrency} Th</p>
                         </div>
+                        {bulkStatus.usingProxies && (
+                          <div className="bg-indigo-50 border border-indigo-100 p-2 rounded-lg">
+                            <p className="text-[10px] text-indigo-500 font-bold uppercase">Proxies</p>
+                            <p className="text-base font-bold font-mono text-indigo-700">{bulkStatus.proxyCount} Px</p>
+                          </div>
+                        )}
                       </div>
                       {bulkStatus.logs.length > 0 && (
                         <div className="bg-slate-900 rounded-lg p-2.5 max-h-32 overflow-y-auto font-mono text-[10px] text-slate-300 space-y-1">

