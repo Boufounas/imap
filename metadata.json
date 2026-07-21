@@ -1,0 +1,6 @@
+{
+  "name": "Delta IMAP Tester",
+  "description": "A high-performance IMAP connection testing suite designed for Delta Marketing Solution SARL AU. Supports single and bulk validation, local directory scanning, and automated logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
